@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vectornav-dashboard"
+version = "1.0.0"
+description = "Lightweight live dashboard for the RFR VN-300 logger"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["aiohttp>=3.9,<4"]
+
+[project.scripts]
+vectornav-dashboard = "vectornav_dashboard.server:main"
+
+[tool.setuptools.package-data]
+vectornav_dashboard = ["static/*"]

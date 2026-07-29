@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RFR · VectorNav Live</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="mark">R</div>
+      <div>
+        <p class="eyebrow">RUTGERS FORMULA RACING</p>
+        <h1>VectorNav Live</h1>
+      </div>
+    </div>
+    <div class="header-status">
+      <span id="connection-pill" class="pill offline"><i></i> Waiting for logger</span>
+      <span id="recording-pill" class="pill muted">Stopped</span>
+      <button id="operator-button" class="ghost">Operator login</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="map-panel panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">LIVE TRAJECTORY</p>
+          <h2>Local position</h2>
+        </div>
+        <div class="map-actions">
+          <button id="rotate-left" title="Rotate left">↺</button>
+          <button id="reset-view">Reset view</button>
+          <button id="rotate-right" title="Rotate right">↻</button>
+        </div>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="track-canvas"></canvas>
+        <div id="map-empty" class="map-empty">
+          <strong>Waiting for fused INS position</strong>
+          <span>The first valid point becomes the session origin.</span>
+        </div>
+        <div class="axis-label north">N</div>
+        <div class="axis-label east">E</div>
+        <div class="map-legend">
+          <span><i class="legend-line"></i> Driven path</span>
+          <span><i class="legend-dot"></i> Current position</span>
+          <span id="source-label"><i class="legend-source"></i> No position</span>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side-column">
+      <section class="panel telemetry-panel">
+        <div class="panel-heading compact">
+          <div>
+            <p class="eyebrow">TELEMETRY</p>
+            <h2>At a glance</h2>
+          </div>
+          <span id="viewer-count" class="subtle">1 viewer</span>
+        </div>
+        <div class="metric-grid">
+          <article><span>Speed</span><strong id="speed">—</strong><small>m/s</small></article>
+          <article><span>GNSS fix</span><strong id="fix">—</strong><small id="satellites">— sats</small></article>
+          <article><span>Lap</span><strong id="lap-count">—</strong><small id="lap-time">—</small></article>
+          <article><span>Position σ</span><strong id="uncertainty">—</strong><small>meters</small></article>
+        </div>
+        <dl class="detail-list">
+          <div><dt>Session</dt><dd id="session">—</dd></div>
+          <div><dt>Rows saved</dt><dd id="rows">0</dd></div>
+          <div><dt>Sensor</dt><dd id="sensor">—</dd></div>
+          <div><dt>Disk free</dt><dd id="disk">—</dd></div>
+          <div><dt>Pi temperature</dt><dd id="temperature">—</dd></div>
+        </dl>
+      </section>
+
+      <section id="controls-panel" class="panel controls-panel locked">
+        <div class="panel-heading compact">
+          <div>
+            <p class="eyebrow">OPERATOR</p>
+            <h2>Logger controls</h2>
+          </div>
+          <span id="lock-label" class="subtle">Locked</span>
+        </div>
+        <div class="control-grid">
+          <button data-command="start" class="primary">Start</button>
+          <button data-command="stop" data-confirm="Stop the current recording?">Stop</button>
+          <button data-command="new-session" data-confirm="Close this file and start a new session?">New session</button>
+          <button data-command="reset-laps">Reset laps</button>
+          <button data-command="set-start-finish" data-confirm="Use the current INS position as start/finish?">Set start/finish</button>
+          <button data-command="reconnect" data-confirm="Reconnect the sensor and rotate the active session?">Reconnect sensor</button>
+        </div>
+        <div class="marker-box">
+          <label for="marker-type">Event marker</label>
+          <div class="marker-row">
+            <select id="marker-type">
+              <option>Run Start</option><option>Cone</option><option>Mechanical</option>
+              <option>Setup Change</option><option>Flag</option><option>Other</option>
+            </select>
+            <input id="marker-note" maxlength="120" placeholder="Optional note">
+            <button id="add-marker" class="accent">Mark</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <section class="panel sessions-panel">
+      <div class="panel-heading compact">
+        <div>
+          <p class="eyebrow">SESSION ARCHIVE</p>
+          <h2>Completed recordings</h2>
+        </div>
+        <button id="refresh-sessions" class="ghost">Refresh</button>
+      </div>
+      <div id="sessions-list" class="sessions-list">
+        <p class="empty-copy">No completed sessions found.</p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="login-dialog">
+    <form method="dialog" id="login-form">
+      <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+      <p class="eyebrow">OPERATOR ACCESS</p>
+      <h2>Unlock logger controls</h2>
+      <p>Enter the six-digit PIN generated during installation.</p>
+      <input id="pin-input" inputmode="numeric" autocomplete="one-time-code"
+             maxlength="6" pattern="[0-9]{6}" placeholder="••••••" required>
+      <p id="login-error" class="error"></p>
+      <button class="primary wide" value="default">Unlock controls</button>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

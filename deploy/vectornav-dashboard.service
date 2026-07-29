@@ -1,0 +1,25 @@
+[Unit]
+Description=RFR VectorNav live dashboard
+After=network.target vectornav-logger.service
+
+[Service]
+Type=simple
+User=vectornav
+Group=vectornav
+WorkingDirectory=/opt/vectornav
+Environment=VECTORNAV_DASHBOARD_PORT=8080
+EnvironmentFile=-/etc/default/vectornav-logger
+ExecStart=/opt/vectornav/venv/bin/vectornav-dashboard --host 0.0.0.0 --port ${VECTORNAV_DASHBOARD_PORT} --log-dir /var/lib/vectornav/logs --auth-file /var/lib/vectornav/dashboard-auth.json --control-socket /run/vectornav/logger-control.sock --telemetry-socket /run/vectornav/dashboard-telemetry.sock
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=vectornav
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=restart
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/run/vectornav
+
+[Install]
+WantedBy=multi-user.target

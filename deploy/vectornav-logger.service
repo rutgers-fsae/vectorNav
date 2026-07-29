@@ -13,16 +13,19 @@ Environment=VECTORNAV_BAUD=460800
 Environment=VECTORNAV_RATE=40
 Environment=VECTORNAV_OUTPUT_DIR=/var/lib/vectornav/logs
 EnvironmentFile=-/etc/default/vectornav-logger
-ExecStart=/opt/vectornav/venv/bin/python /opt/vectornav/rfr_vn300_logger.py --port ${VECTORNAV_PORT} --baud ${VECTORNAV_BAUD} --rate ${VECTORNAV_RATE} --output-dir ${VECTORNAV_OUTPUT_DIR}
+ExecStart=/opt/vectornav/venv/bin/python /opt/vectornav/rfr_vn300_logger.py --port ${VECTORNAV_PORT} --baud ${VECTORNAV_BAUD} --rate ${VECTORNAV_RATE} --output-dir ${VECTORNAV_OUTPUT_DIR} --config-file /var/lib/vectornav/config.json --control-socket /run/vectornav/logger-control.sock --telemetry-socket /run/vectornav/dashboard-telemetry.sock
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM
 TimeoutStopSec=15
+RuntimeDirectory=vectornav
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=restart
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/lib/vectornav/logs
+ReadWritePaths=/var/lib/vectornav /run/vectornav
 
 [Install]
 WantedBy=multi-user.target
