@@ -1,277 +1,403 @@
-# RFR VN-300 Full Data Logger — Rutgers Formula Racing
-# Run: py -3.11 rfr_vn300_logger.py
-# Logs GPS, IMU, INS, and attitude data to a timestamped CSV file
+"""RFR VN-300 GPS, IMU, INS, and attitude data logger."""
+
+from __future__ import annotations
+
 import argparse
-import math
-from vectornav import Sensor, Registers
-from datetime import datetime  # gives us current date and time
-import csv  # csv is python's built-in library for writing CSV files
-import sys  # sys lets us exit the program if connection fails
+import csv
+from datetime import datetime
+import importlib
 import logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+import math
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+from typing import Any, Callable, TextIO
+
+
+LOGGER = logging.getLogger(__name__)
+
+DEFAULT_PORT = "/dev/ttyUSB0"
+DEFAULT_BAUD = 460800
+DEFAULT_RATE_DIVISOR = 40
+SUPPORTED_BAUD_RATES = (
+    9600,
+    19200,
+    38400,
+    57600,
+    115200,
+    128000,
+    230400,
+    460800,
+    921600,
 )
-logger = logging.getLogger(__name__)
+FLUSH_EVERY_ROWS = 50
+FSYNC_INTERVAL_SECONDS = 5.0
 
-
-def distance_meters(lat1, lon1, lat2, lon2):
-    # Haversine formula to calculate distance between two lat/lon points in meters (Curved distance between 2GPS points)
-    R = 6371000  # Earth radius in meters
-    dlat = math.radians(lat2-lat1)
-    dlon = math.radians(lon2-lon1)
-    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * \
-        math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
-    return R * 2 * math.asin(math.sqrt(a))
-
-# gives us 2 things we need from VectorNav SDK library
-
-
-# argparse lets us pass PORT and RATE from the terminal when running the script
-# CONFIG Argumentparser handles reading terminal input
-parser = argparse.ArgumentParser(description="VN-300 Data Logger")
-parser.add_argument("--port", default="COM3",
-                    help="Serial port (e.g. COM3 or /dev/ttyUSB0)")
-parser.add_argument("--rate", type=int, default=40, help="Rate Divisor")
-args = parser.parse_args()
-PORT = args.port
-RATE = args.rate
-# creates a new filename everytime the script runs
-FILENAME = f"rfr_vn300_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-
-# LAP TIMER CONFIG
+# Lap timer configuration.
 START_LAT = 40.52653
 START_LON = -74.46526
 THRESHOLD_METERS = 5.0
-COOL_DOWN_SECONDS = 20
+COOL_DOWN_SECONDS = 20.0
+EARTH_RADIUS_METERS = 6_371_000.0
+START_LAT_RADIANS = math.radians(START_LAT)
 
-# CSV SETUP COLS is the list that defines every coloumns in the CSV file, order = The order coloumns appear in the Excel
-# Each string is a coloumns header name
 COLS = [
-    "timestamp",                           # Local system time
-    "startup_ns", "gps_utc_ns",           # Sensor timing
-    "yaw", "pitch", "roll",               # Attitude degrees
-    "ax", "ay", "az",                     # Acceleration m/s² (az = downforce)
-    "gx", "gy", "gz",                     # Gyro rad/s (gz = yaw rate)
-    "dvx", "dvy", "dvz",                  # Delta velocity
-    "dtx", "dty", "dtz", "dt",           # Delta theta + interval
-    "mx", "my", "mz",                     # Magnetometer Gauss
-    "temp_c", "pressure_pa",              # Temperature and pressure
-    "gnss_fix", "gnss_sats",               # GNSS quality
-    "gnss_lat", "gnss_lon", "gnss_alt",    # Raw GNSS position
-    "gnss_vn", "gnss_ve", "gnss_vd",       # GNSS velocity
-    "gnss_speed",                          # Ground speed m/s
-    "ins_lat", "ins_lon", "ins_alt",    # INS fused position
-    "ins_vn", "ins_ve", "ins_vd",       # INS fused velocity
+    "timestamp",
+    "startup_ns",
+    "gps_utc_ns",
+    "yaw",
+    "pitch",
+    "roll",
+    "ax",
+    "ay",
+    "az",
+    "gx",
+    "gy",
+    "gz",
+    "dvx",
+    "dvy",
+    "dvz",
+    "dtx",
+    "dty",
+    "dtz",
+    "dt",
+    "mx",
+    "my",
+    "mz",
+    "temp_c",
+    "pressure_pa",
+    "gnss_fix",
+    "gnss_sats",
+    "gnss_lat",
+    "gnss_lon",
+    "gnss_alt",
+    "gnss_vn",
+    "gnss_ve",
+    "gnss_vd",
+    "gnss_speed",
+    "gnss_pos_u_n",
+    "gnss_pos_u_e",
+    "gnss_pos_u_d",
+    "ins_lat",
+    "ins_lon",
+    "ins_alt",
+    "ins_vn",
+    "ins_ve",
+    "ins_vd",
+    "ins_pos_u",
+    "ins_vel_u",
 ]
 
-# ── CONNECT ──────────────────────────────────────────────────────────
-sensor = Sensor()  # Creates Sensor object
-try:
-    # autocconnect tries all standard baud rates automatically until it finds the VN-300
-    sensor.autoConnect(PORT)
-# contains specific error message explaining what went wrong (e.g. wrong port, no permission, etc.)
-except Exception as e:
-    # explaining what went wrong (e.g. wrong port, no permission, etc.)
-    logger.error(f"Connection failed: {e}")
-    sys.exit(1)  # stops the entire script
 
-# confirms connection worked and prints baud rate
-logger.info(f"Connected: {sensor.connectedBaudRate()} baud")
-# creates an empty container for the model number data
-model_register = Registers.System.Model()
-# prints model number to confirm we're talking to the sensor(VN-300)
-sensor.readRegister(model_register)
-# confirms we are talking to the right device and prints the model number(VN-300T-CR)
-logger.info(f"Sensor: {model_register.model}")
+def positive_rate_divisor(value: str) -> int:
+    divisor = int(value)
+    if not 1 <= divisor <= 65_535:
+        raise argparse.ArgumentTypeError("rate divisor must be between 1 and 65535")
+    return divisor
 
-# BINARY OUTPUT 1 — IMU + ATTITUDE    1 MEANS INCLUDE IT IN THE PACKET, 0 MEANS DON'T INCLUDE IT
-# Creates a configuration object for Binary Output 1
-imu_output = Registers.System.BinaryOutput1()
-# Tells the sensor to stream data out on the serial port 1(FTDI cable)
-imu_output.asyncMode.serial1 = 1
-# RATE is already defined as 40, which divides the internal 400Hz rate to get 10Hz output
-imu_output.rateDivisor = RATE
-imu_output.common.timeStartup = 1  # Time since boot in nanoseconds
-imu_output.common.timeGps = 1      # GPS UTC time
-# Yaw Pitch Roll in degrees: Orientation of the car in degrees
-imu_output.common.ypr = 1
-imu_output.common.accel = 1        # Accelerometer forces X/Y/Z m/s²
-imu_output.common.angularRate = 1  # Gyroscope(rotation rates) X/Y/Z in rad/s
-imu_output.common.imu = 1          # Full IMU packet
-# Magnetometer (heading) and barometric pressure
-imu_output.common.magPres = 1
-# Delta velocity and delta theta (Change in velocities and angles between samples)
-imu_output.common.deltas = 1
-# Sends the completed config form to the physical sensor
-sensor.writeRegister(imu_output)
-logger.info("Binary Output 1 configured (IMU + Attitude)")
 
-# BINARY OUTPUT 2 — GNSS
-# Creates configuration object for the raw GPS data. The data straight from the satellite receiver
-gnss_output = Registers.System.BinaryOutput2()
-gnss_output.asyncMode.serial1 = 1  # Stream on serial port 1
-gnss_output.rateDivisor = RATE  # same 10Hz rate
-# Fix type: 3 = 3D fix(fix type 3 means full 3D fix, need this before driving)
-gnss_output.gnss.gnss1Fix = 1
-# Satellite count (Number of satellites in view, more is better for accuracy)
-gnss_output.gnss.gnss1NumSats = 1
-# Raw GPS position lat/lon/alt (Latitude, longitude, and altitude from the GPS)
-gnss_output.gnss.gnss1PosLla = 1
-# GPS velocity North/East/Down (Velocity in north/east/down coordinates from the GPS)
-gnss_output.gnss.gnss1VelNed = 1
-# Position accuracy estimate (how accurate the GPS position is in meters)
-gnss_output.gnss.gnss1PosUncertainty = 1
-# Sends the completed config form to the physical sensor
-sensor.writeRegister(gnss_output)
-logger.info("Binary Output 2 configured (GNSS)")
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="VN-300 data logger")
+    parser.add_argument(
+        "--port",
+        default=DEFAULT_PORT,
+        help=f"Serial port (default: {DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "--baud",
+        type=int,
+        choices=SUPPORTED_BAUD_RATES,
+        default=DEFAULT_BAUD,
+        help=f"Active serial baud rate after connecting (default: {DEFAULT_BAUD})",
+    )
+    parser.add_argument(
+        "--rate",
+        type=positive_rate_divisor,
+        default=DEFAULT_RATE_DIVISOR,
+        metavar="DIVISOR",
+        help="VN-300 400 Hz base-rate divisor (40 produces 10 Hz)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path.cwd(),
+        help="Directory for timestamped CSV files (default: current directory)",
+    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    return parser.parse_args(argv)
 
-# ── BINARY OUTPUT 3 — INS FUSED (Inertial Navigation system) GPS + IMU COMBINED, more accurate than raw GPS
-# Creates configuration object for the INS fused solution
-ins_output = Registers.System.BinaryOutput3()
-ins_output.asyncMode.serial1 = 1             # Stream on serial port 1
-ins_output.rateDivisor = RATE                # same 10Hz rate
-ins_output.ins.posLla = 1          # Fused lat/lon/altitude position — most accurate
-# Fused velocity North/East/Down - smoother than raw GPS
-ins_output.ins.velNed = 1
-# Position uncertainty- How confident the INS is in meters
-ins_output.ins.posU = 1
-# Velocity uncertainty- How confident the INS is in m/s
-ins_output.ins.velU = 1
-# Sends the completed INS config form to the physical sensor
-sensor.writeRegister(ins_output)
-logger.info("Binary Output 3 configured (INS)")
 
-# Opens CSV file for writing "w"= Write mode(creates news file), newline=prevents extra blank lines in Windows
-f = open(FILENAME, "w", newline="")
-# Dictwriter lets us write rows as dictionaires, fieldnames=COLS tells it the order of coloumns, ignore keys that are not in COLS
-w = csv.DictWriter(f, fieldnames=COLS, extrasaction="ignore")
-w.writeheader()  # Coloumns names as the first row in the CSV
-# Confirms to the terminal that logging has started
-logger.info(f"Logging → {FILENAME}")
-logger.info("Ctrl+C to stop")
+def distance_meters(lat: float, lon: float) -> float:
+    """Return the great-circle distance from a position to the start line."""
+    lat_radians = math.radians(lat)
+    dlat = lat_radians - START_LAT_RADIANS
+    dlon = math.radians(lon - START_LON)
+    haversine = (
+        math.sin(dlat / 2.0) ** 2
+        + math.cos(lat_radians)
+        * math.cos(START_LAT_RADIANS)
+        * math.sin(dlon / 2.0) ** 2
+    )
+    return EARTH_RADIUS_METERS * 2.0 * math.asin(math.sqrt(haversine))
 
-# MAIN LOGGING LOOP
-last_lap_time = None
-lap_count = 0
-row_count = 0  # n is a row counter
-try:
-    while True:
-        # Get next data packet (asks the sensor for the next avaiable data packet)
+
+def configure_binary_output(sensor: Any, registers: Any, rate: int) -> Any:
+    """Configure one complete output packet and disable the other two streams."""
+    output = registers.System.BinaryOutput1()
+    output.asyncMode.serial1 = 1
+    output.rateDivisor = rate
+
+    output.common.timeStartup = 1
+    output.common.timeGps = 1
+    output.common.ypr = 1
+    output.common.accel = 1
+    output.common.angularRate = 1
+    output.common.magPres = 1
+    output.common.deltas = 1
+
+    output.gnss.gnss1Fix = 1
+    output.gnss.gnss1NumSats = 1
+    output.gnss.gnss1PosLla = 1
+    output.gnss.gnss1VelNed = 1
+    output.gnss.gnss1PosUncertainty = 1
+
+    output.ins.posLla = 1
+    output.ins.velNed = 1
+    output.ins.posU = 1
+    output.ins.velU = 1
+
+    sensor.writeRegister(output)
+
+    for output_type in (
+        registers.System.BinaryOutput2,
+        registers.System.BinaryOutput3,
+    ):
+        disabled_output = output_type()
+        disabled_output.asyncMode.serial1 = 0
+        sensor.writeRegister(disabled_output)
+
+    return output
+
+
+def measurement_to_row(
+    measurement: Any,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    """Convert a combined VectorNav measurement into one CSV row."""
+    row: dict[str, Any] = {
+        "timestamp": timestamp or datetime.now().astimezone().isoformat()
+    }
+
+    if measurement.time.timeStartup is not None:
+        row["startup_ns"] = measurement.time.timeStartup.nanoseconds()
+    if measurement.time.timeGps is not None:
+        row["gps_utc_ns"] = measurement.time.timeGps.nanoseconds()
+
+    if measurement.attitude.ypr is not None:
+        row["yaw"] = measurement.attitude.ypr.yaw
+        row["pitch"] = measurement.attitude.ypr.pitch
+        row["roll"] = measurement.attitude.ypr.roll
+
+    if measurement.imu.accel is not None:
+        row["ax"], row["ay"], row["az"] = measurement.imu.accel
+    if measurement.imu.angularRate is not None:
+        row["gx"], row["gy"], row["gz"] = measurement.imu.angularRate
+    if measurement.imu.deltaTheta is not None:
+        row["dtx"], row["dty"], row["dtz"] = (
+            measurement.imu.deltaTheta.deltaTheta
+        )
+        row["dt"] = measurement.imu.deltaTheta.deltaTime
+    if measurement.imu.deltaVel is not None:
+        row["dvx"], row["dvy"], row["dvz"] = measurement.imu.deltaVel
+    if measurement.imu.mag is not None:
+        row["mx"], row["my"], row["mz"] = measurement.imu.mag
+    if measurement.imu.temperature is not None:
+        row["temp_c"] = measurement.imu.temperature
+    if measurement.imu.pressure is not None:
+        row["pressure_pa"] = measurement.imu.pressure
+
+    if measurement.gnss.gnss1Fix is not None:
+        row["gnss_fix"] = int(measurement.gnss.gnss1Fix)
+    if measurement.gnss.gnss1NumSats is not None:
+        row["gnss_sats"] = measurement.gnss.gnss1NumSats
+    if measurement.gnss.gnss1PosLla is not None:
+        row["gnss_lat"] = measurement.gnss.gnss1PosLla.lat
+        row["gnss_lon"] = measurement.gnss.gnss1PosLla.lon
+        row["gnss_alt"] = measurement.gnss.gnss1PosLla.alt
+    if measurement.gnss.gnss1VelNed is not None:
+        row["gnss_vn"], row["gnss_ve"], row["gnss_vd"] = (
+            measurement.gnss.gnss1VelNed
+        )
+        row["gnss_speed"] = math.sqrt(
+            row["gnss_vn"] ** 2 + row["gnss_ve"] ** 2 + row["gnss_vd"] ** 2
+        )
+    if measurement.gnss.gnss1PosUncertainty is not None:
+        (
+            row["gnss_pos_u_n"],
+            row["gnss_pos_u_e"],
+            row["gnss_pos_u_d"],
+        ) = measurement.gnss.gnss1PosUncertainty
+
+    if measurement.ins.posLla is not None:
+        row["ins_lat"] = measurement.ins.posLla.lat
+        row["ins_lon"] = measurement.ins.posLla.lon
+        row["ins_alt"] = measurement.ins.posLla.alt
+    if measurement.ins.velNed is not None:
+        row["ins_vn"], row["ins_ve"], row["ins_vd"] = measurement.ins.velNed
+    if measurement.ins.posU is not None:
+        row["ins_pos_u"] = measurement.ins.posU
+    if measurement.ins.velU is not None:
+        row["ins_vel_u"] = measurement.ins.velU
+
+    return row
+
+
+def sync_file(csv_file: TextIO) -> None:
+    csv_file.flush()
+    os.fsync(csv_file.fileno())
+
+
+def log_measurements(
+    sensor: Any,
+    output: Any,
+    csv_file: TextIO,
+    should_stop: Callable[[], bool],
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+    sync: Callable[[TextIO], None] = sync_file,
+) -> int:
+    writer = csv.DictWriter(csv_file, fieldnames=COLS, extrasaction="raise")
+    writer.writeheader()
+
+    row_count = 0
+    lap_count = 0
+    last_lap_time: float | None = None
+    last_sync_time = monotonic()
+
+    while not should_stop():
         measurement = sensor.getNextMeasurement()
         if not measurement:
-            continue                # Skip if nothing ready
+            sensor.throwIfAsyncError()
+            continue
+        if not measurement.matchesMessage(output):
+            LOGGER.debug("Ignoring an asynchronous packet from another output")
+            sensor.throwIfAsyncError()
+            continue
 
-        # start a new row dictionary with current local time isoformat gives a clean readable timestamp
-        r = {"timestamp": datetime.now().isoformat()}
-
-        # Timing
-        # check if the packet contains startup time before trying to read it
-        if measurement.time.timeStartup is not None:
-            # nanoseconds converts the time object to a plain number
-            r["startup_ns"] = measurement.time.timeStartup.nanoseconds()
-        # more accurate than system clock time probably useful for syncing with other car sensors
-        if measurement.time.timeGps is not None:
-            r["gps_utc_ns"] = measurement.time.timeGps.nanoseconds()
-
-        # Attitude — yaw/pitch/roll
-        if measurement.attitude.ypr is not None:  # check if the packet contains attitude data before trying to read it
-            # Yaw= car's heading angle, 0-360 degrees where 0/360 is north, 90 is east, 180 is south, 270 is west
-            r["yaw"] = measurement.attitude.ypr.yaw
-            # pitch = nose up/down angle, positive is nose up, negative is nose down
-            r["pitch"] = measurement.attitude.ypr.pitch
-            # roll = lean left/right angle, positive is leaning right, negative is leaning left
-            r["roll"] = measurement.attitude.ypr.roll
-
-        # Accelerometer — az is vertical g-force for aero downforce analysis
-        # accel is subscriptable - [o] is x, [1] is y, [2] is z
-        # ax = forward/backward force, ay = left/right cornering force, az = vertical force (KEY for aero team, increases with downforce)
-        if measurement.imu.accel is not None:
-            r["ax"], r["ay"], r["az"] = measurement.imu.accel[0], measurement.imu.accel[1], measurement.imu.accel[2]
-
-        # Gyroscope — gz is yaw rate, how fast car is turning
-        # rotation rates ins rad/s on each axis, gz = yaw rate how fast the car is turning, higher means faster turn
-        if measurement.imu.angularRate is not None:
-            r["gx"], r["gy"], r["gz"] = measurement.imu.angularRate[0], measurement.imu.angularRate[1], measurement.imu.angularRate[2]
-
-        # Delta theta — integrated rotation between samples
-        if measurement.imu.deltaTheta is not None:
-            # Change in rotation angle, used to reconstruct trajectory
-            r["dtx"] = measurement.imu.deltaTheta.deltaTheta[0]
-            r["dty"] = measurement.imu.deltaTheta.deltaTheta[1]
-            r["dtz"] = measurement.imu.deltaTheta.deltaTheta[2]
-            # dt = time interval between this sample and last in seconds
-            r["dt"] = measurement.imu.deltaTheta.deltaTime
-
-        # Delta velocity — integrated acceleration between samples
-        if measurement.imu.deltaVel is not None:
-            # change in velocity since last sample in m/s, integrated from accelrometer between samples
-            r["dvx"], r["dvy"], r["dvz"] = measurement.imu.deltaVel[0], measurement.imu.deltaVel[1], measurement.imu.deltaVel[2]
-
-        # Magnetometer — used for heading calibration
-        # Magnetic feild strength in guass on each axis, used internally by VN-300 for heading
-        if measurement.imu.mag is not None:
-            r["mx"], r["my"], r["mz"] = measurement.imu.mag[0], measurement.imu.mag[1], measurement.imu.mag[2]
-
-        # Temperature and pressure
-        if measurement.imu.temperature is not None:  # Internal sensor temperature in Celciius
-            r["temp_c"] = measurement.imu.temperature
-        if measurement.imu.pressure is not None:  # air pressure in pascals - changes with altitude and weather
-            r["pressure_pa"] = measurement.imu.pressure
-
-        # Raw GNSS — parse position and velocity from string
-        # fix type 3 = full  3D lock - car cannot move until this is 3, int() converts the object to a plain number
-        if measurement.gnss.gnss1Fix is not None:
-            r["gnss_fix"] = int(measurement.gnss.gnss1Fix)
-        if measurement.gnss.gnss1NumSats is not None:  # number of satellites in view
-            r["gnss_sats"] = measurement.gnss.gnss1NumSats
-        # posLla has named attributes lat/lon/alt raw GNSS position from satellites
-        if measurement.gnss.gnss1PosLla is not None:
-            r["gnss_lat"] = measurement.gnss.gnss1PosLla.lat
-            r["gnss_lon"] = measurement.gnss.gnss1PosLla.lon
-            r["gnss_alt"] = measurement.gnss.gnss1PosLla.alt
-        if measurement.gnss.gnss1VelNed is not None:  # raw GNSS velocity in North East Down in m/s
-            r["gnss_vn"] = measurement.gnss.gnss1VelNed[0]  # northward
-            r["gnss_ve"] = measurement.gnss.gnss1VelNed[1]  # eastward
-            r["gnss_vd"] = measurement.gnss.gnss1VelNed[2]  # downward
-            # ground speed = 3D magnitude of velocity vector using pythagoras
-            # sqrt(vn² + ve² + vd²) gives total speed in m/s
-            r["gnss_speed"] = (r["gnss_vn"]**2 + r["gnss_ve"] **
-                               2 + r["gnss_vd"]**2)**0.5
-
-        # INS fused solution — GPS + IMU combined, most accurate
-        if measurement.ins.posLla is not None:
-            # posLla has named attributes .lat .lon .alt, this is GPS + IMU combined, more accurate and smoother than raw gnss_lat/lon above
-            r["ins_lat"] = measurement.ins.posLla.lat
-            r["ins_lon"] = measurement.ins.posLla.lon
-            r["ins_alt"] = measurement.ins.posLla.alt
-        if measurement.ins.velNed is not None:
-            # fused velocity North East Down in m/s, smoother than raw GNSS velocity because IMU fills the gaps
-            r["ins_vn"] = measurement.ins.velNed[0]
-            r["ins_ve"] = measurement.ins.velNed[1]
-            r["ins_vd"] = measurement.ins.velNed[2]
-            # LAP TIMER
-        # runs every loop — checks if car is within 5m of start/finish line
-        if r.get("ins_lat") is not None and r.get("ins_lon") is not None:
-            dist = distance_meters(
-                r["ins_lat"], r["ins_lon"], START_LAT, START_LON)
-            now = datetime.now()
-            if dist < THRESHOLD_METERS:
-                if last_lap_time is None or (now - last_lap_time).total_seconds() > COOL_DOWN_SECONDS:
+        row = measurement_to_row(measurement)
+        now = monotonic()
+        if row.get("ins_lat") is not None and row.get("ins_lon") is not None:
+            if distance_meters(row["ins_lat"], row["ins_lon"]) < THRESHOLD_METERS:
+                if (
+                    last_lap_time is None
+                    or now - last_lap_time > COOL_DOWN_SECONDS
+                ):
                     if last_lap_time is not None:
-                        lap_time = (now - last_lap_time).total_seconds()
-                        logger.info(
-                            f"Lap {lap_count} time: {lap_time:.3f} seconds")
+                        LOGGER.info(
+                            "Lap %d time: %.3f seconds",
+                            lap_count,
+                            now - last_lap_time,
+                        )
                     last_lap_time = now
                     lap_count += 1
 
-        w.writerow(r)   # Write row to CSV
-        if row_count % 50 == 0:
-            f.flush()  # Flush every 50 rows to ensure data is written to disk regularly
+        writer.writerow(row)
         row_count += 1
-except KeyboardInterrupt:
-    logger.info(f"Stopped. {row_count} rows saved → {FILENAME}")
-finally:
-    f.close()
-    sensor.disconnect()
-    logger.info("Done.")
+        if row_count % FLUSH_EVERY_ROWS == 0:
+            csv_file.flush()
+        if now - last_sync_time >= FSYNC_INTERVAL_SECONDS:
+            sync(csv_file)
+            last_sync_time = now
+
+        sensor.throwIfAsyncError()
+
+    sync(csv_file)
+    return row_count
+
+
+def output_path(output_dir: Path, now: datetime | None = None) -> Path:
+    timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    return output_dir / f"rfr_vn300_{timestamp}.csv"
+
+
+def run(args: argparse.Namespace) -> int:
+    vectornav = importlib.import_module("vectornav")
+    sensor = vectornav.Sensor()
+    csv_file: TextIO | None = None
+    stop_requested = False
+    rows_saved = 0
+    filename: Path | None = None
+
+    def request_stop(signum: int, _frame: Any) -> None:
+        nonlocal stop_requested
+        LOGGER.info("Received signal %d; stopping", signum)
+        stop_requested = True
+
+    previous_handlers = {
+        sig: signal.signal(sig, request_stop)
+        for sig in (signal.SIGINT, signal.SIGTERM)
+    }
+
+    try:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        filename = output_path(args.output_dir)
+        csv_file = filename.open("w", newline="", encoding="utf-8")
+
+        sensor.autoConnect(args.port)
+        baud_rate = getattr(vectornav.Sensor.BaudRate, f"Baud{args.baud}")
+        if sensor.connectedBaudRate() != baud_rate:
+            sensor.changeBaudRate(baud_rate)
+        if sensor.connectedBaudRate() != baud_rate:
+            raise RuntimeError(f"failed to switch serial connection to {args.baud} baud")
+
+        LOGGER.info("Connected on %s at %d baud", args.port, args.baud)
+        model_register = vectornav.Registers.System.Model()
+        sensor.readRegister(model_register)
+        LOGGER.info("Sensor: %s", model_register.model)
+
+        output = configure_binary_output(sensor, vectornav.Registers, args.rate)
+        LOGGER.info(
+            "Configured one combined binary output at %.3f Hz",
+            400.0 / args.rate,
+        )
+        LOGGER.info("Logging to %s", filename)
+
+        rows_saved = log_measurements(
+            sensor,
+            output,
+            csv_file,
+            lambda: stop_requested,
+        )
+        LOGGER.info("Stopped. %d rows saved to %s", rows_saved, filename)
+        return 0
+    except Exception:
+        LOGGER.exception("VN-300 logger failed")
+        return 1
+    finally:
+        if csv_file is not None:
+            try:
+                sync_file(csv_file)
+            except OSError:
+                LOGGER.exception("Failed to sync %s", filename)
+            csv_file.close()
+        try:
+            sensor.disconnect()
+        except Exception:
+            LOGGER.exception("Failed to disconnect sensor")
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+    return run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

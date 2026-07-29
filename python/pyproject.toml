@@ -28,14 +28,11 @@
 # THE SOFTWARE.
 
 [build-system]
-requires = ['setuptools>=40.8.0','pybind11>=2.6.0','pybind11-stubgen>=2.5.0']
+requires = ['setuptools>=40.8.0', 'pybind11>=2.6.0']
 build-backend = 'setuptools.build_meta'
 
 [project]
 name = "VectorNav"
 version = "1.0.0"
 requires-python = ">=3.8"
-dependencies = [
-  "pybind11>=2.6.0",
-  "pybind11-stubgen>=2.5.0"
-]
+dependencies = []

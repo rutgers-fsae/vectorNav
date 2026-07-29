@@ -27,13 +27,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-from setuptools import setup, Extension
-from setuptools.command.build_ext import build_ext
+from setuptools import setup
 from pybind11.setup_helpers import Pybind11Extension
 from pathlib import Path
+import os
 import platform
-import subprocess
-import sys 
+
 regScan = Path('plugins/PyRegisterScan.cpp')
 firUpdt = Path('plugins/PyFirmwareProgrammer.cpp')
 logger = Path('plugins/PyLogger.cpp')
@@ -46,7 +45,14 @@ macros = [('__PYTHON__', None)]
 plugins = []
 includes = ['../cpp/include/', '../cpp/plugins', '../cpp/libs', './include', '../cpp/plugins/Math']
 
-if regScan.exists():
+build_plugins_value = os.environ.get('VECTORNAV_BUILD_PLUGINS', '').strip().lower()
+if build_plugins_value not in {'', '0', '1', 'false', 'true', 'no', 'yes'}:
+    raise RuntimeError(
+        'VECTORNAV_BUILD_PLUGINS must be one of: 0, 1, false, true, no, yes'
+    )
+build_plugins = build_plugins_value in {'1', 'true', 'yes'}
+
+if build_plugins and regScan.exists():
     print("Adding Register Scan Plugin")
     macros.append(('__REGSCAN__', None))
     plugins.append(str(regScan))
@@ -57,7 +63,7 @@ if regScan.exists():
     ])
     includes.append('../cpp/plugins/RegisterScan/include')
 
-if firUpdt.exists():
+if build_plugins and firUpdt.exists():
     print("Adding Firmware Programmer Plugin")
     macros.append(('__FIRMWARE_PROGRAMMER__', None))
     plugins.append(str(firUpdt))
@@ -68,13 +74,13 @@ if firUpdt.exists():
     ])
     includes.append('../cpp/plugins/FirmwareProgrammer/include')
 
-if logger.exists():
+if build_plugins and logger.exists():
     print("Adding Logger Plugin")
     macros.append(('__LOGGER__', None))
     plugins.append(str(logger))
     includes.append('../cpp/plugins/Logger')
 
-if dataExp.exists():
+if build_plugins and dataExp.exists():
     print("Adding Data Export Plugin")
     macros.append(('__DATAEXPORT__', None))
     plugins.append(str(dataExp))
@@ -97,7 +103,7 @@ if dataExp.exists():
 #     ])
 #     includes.append('../cpp/plugins/Calibration/include')
 
-if math.exists():
+if build_plugins and math.exists():
     print("Adding Math Plugin")
     macros.append(('__MATH__', None))
     plugins.append(str(math))
@@ -150,52 +156,8 @@ ext_modules = [
 ]
 
 
-class BuildExtWithStubs(build_ext):
-    """Custom build_ext command that generates stub files after building the extension."""
-
-    def run(self):
-        # Build the extension first
-        super().run()
-
-        # Get the output directory where the extension was built
-        if self.inplace:
-            # Development install (pip install -e .)
-            output_dir = Path.cwd()
-        else:
-            # Regular install - get the build lib directory
-            output_dir = Path(self.build_lib)
-
-        self.announce(f"Generating stub files with pybind11-stubgen to {output_dir}...", level=3)
-
-        # Set up environment to find the built module
-        import os
-        env = os.environ.copy()
-        pythonpath = str(output_dir)
-        if 'PYTHONPATH' in env:
-            pythonpath = pythonpath + os.pathsep + env['PYTHONPATH']
-        env['PYTHONPATH'] = pythonpath
-
-        try:
-            # Run pybind11-stubgen with the build directory in PYTHONPATH
-            subprocess.check_call([
-                sys.executable, "-m", "pybind11_stubgen",
-                "vectornav",
-                "-o", str(output_dir),
-                "--ignore-all-errors"
-            ], env=env)
-
-            self.announce("Stub files generated successfully", level=3)
-        except subprocess.CalledProcessError as e:
-            self.announce(f"Failed to generate stubs: {e}", level=2)
-            raise
-        except Exception as e:
-            self.announce(f"Unexpected error generating stubs: {e}", level=2)
-            raise
-
-
 setup(
     name='vectornav',
     version='1.0.0',
     ext_modules=ext_modules,
-    cmdclass={'build_ext': BuildExtWithStubs},
 )

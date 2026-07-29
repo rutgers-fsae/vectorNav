@@ -1,0 +1,28 @@
+[Unit]
+Description=RFR VectorNav VN-300 data logger
+After=local-fs.target
+
+[Service]
+Type=simple
+User=vectornav
+Group=vectornav
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/vectornav
+Environment=VECTORNAV_PORT=/dev/ttyUSB0
+Environment=VECTORNAV_BAUD=460800
+Environment=VECTORNAV_RATE=40
+Environment=VECTORNAV_OUTPUT_DIR=/var/lib/vectornav/logs
+EnvironmentFile=-/etc/default/vectornav-logger
+ExecStart=/opt/vectornav/venv/bin/python /opt/vectornav/rfr_vn300_logger.py --port ${VECTORNAV_PORT} --baud ${VECTORNAV_BAUD} --rate ${VECTORNAV_RATE} --output-dir ${VECTORNAV_OUTPUT_DIR}
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/vectornav/logs
+
+[Install]
+WantedBy=multi-user.target

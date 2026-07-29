@@ -37,5 +37,4 @@ src/vectornav.cpp
 src/VectorNav.egg-info/PKG-INFO
 src/VectorNav.egg-info/SOURCES.txt
 src/VectorNav.egg-info/dependency_links.txt
-src/VectorNav.egg-info/requires.txt
 src/VectorNav.egg-info/top_level.txt

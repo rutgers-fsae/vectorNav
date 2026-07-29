@@ -1,0 +1,5 @@
+# Override these values for the attached VN-300 and desired sample rate.
+VECTORNAV_PORT=/dev/ttyUSB0
+VECTORNAV_BAUD=460800
+VECTORNAV_RATE=40
+VECTORNAV_OUTPUT_DIR=/var/lib/vectornav/logs
