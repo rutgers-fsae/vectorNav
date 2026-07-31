@@ -60,6 +60,13 @@ starting them immediately:
 sudo ./deploy/install-rpi.sh --port /dev/ttyUSB0 --rate 40 --no-start
 ```
 
+To avoid compiling C++ on the Pi, supply a compatible wheel built as described
+below:
+
+```bash
+sudo ./deploy/install-rpi.sh --vectornav-wheel ./vectornav-1.0.0-cp313-cp313-linux_aarch64.whl
+```
+
 The remaining commands document the equivalent manual installation.
 
 ```bash
@@ -105,6 +112,30 @@ env CXXFLAGS=-O2 MAX_JOBS=1 python -m pip wheel ./python --wheel-dir ./dist
 ```
 
 Do not use `-march=native` for a wheel intended for more than one device.
+
+### Build the ARM64 wheel with Docker
+
+Docker Desktop on an Apple Silicon Mac can build the Linux ARM64 wheel without
+compiling on the Pi. From the repository root, run:
+
+```bash
+./deploy/build-arm64-wheel.sh
+```
+
+The wheel is written to `dist/`. The image currently targets CPython 3.13 on
+ARM64 Linux, matching Raspberry Pi OS installations that use Python 3.13. Copy
+the wheel to the Pi, pull the same repository revision, and run:
+
+```bash
+sudo ./deploy/install-rpi.sh --vectornav-wheel ./dist/vectornav-1.0.0-cp313-cp313-linux_aarch64.whl
+```
+
+The installer validates the CPython and ARM64 tags before installation. If no
+wheel is supplied, it falls back to compiling the extension locally.
+
+To target a different Python minor version, set `PYTHON_VERSION`, for example
+`PYTHON_VERSION=3.12 ./deploy/build-arm64-wheel.sh`. It must match the Python
+minor version reported by `python3 --version` on the Pi.
 
 To compile all optional VectorNav Python plugins instead of the minimal core,
 set `VECTORNAV_BUILD_PLUGINS=1` while building:

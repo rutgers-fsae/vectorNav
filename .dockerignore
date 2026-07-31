@@ -1,0 +1,10 @@
+.git
+.venv
+venv
+dist
+build
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+python/documentation
+python/examples

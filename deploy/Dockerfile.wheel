@@ -1,0 +1,20 @@
+ARG PYTHON_VERSION=3.13
+FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY cpp ./cpp
+COPY python ./python
+
+ENV VECTORNAV_BUILD_PLUGINS=0
+RUN CXXFLAGS="-O2 -g0" \
+    python -m pip wheel \
+    --no-deps \
+    --wheel-dir /wheelhouse \
+    ./python
+
+FROM scratch AS output
+COPY --from=builder /wheelhouse/ /

@@ -10,6 +10,7 @@ DASHBOARD_SERVICE_NAME="vectornav-dashboard.service"
 CONFIG_FILE="/etc/default/vectornav-logger"
 AUTH_FILE="/var/lib/vectornav/dashboard-auth.json"
 VECTORNAV_BUILD_STAMP="${INSTALL_DIR}/.vectornav-build.sha256"
+VECTORNAV_WHEEL=""
 PORT="/dev/ttyUSB0"
 BAUD="460800"
 RATE="40"
@@ -29,6 +30,8 @@ Options:
   --baud RATE       Serial baud rate (default: 460800)
   --rate DIVISOR    VN-300 400 Hz rate divisor (default: 40, or 10 Hz)
   --dashboard-port  Dashboard HTTP port (default: 8080)
+  --vectornav-wheel PATH
+                     Install a prebuilt ARM64 wheel instead of compiling
   --rebuild         Rebuild the native VectorNav extension even if unchanged
   --no-start        Install and enable the service without starting it now
   -h, --help        Show this help
@@ -67,6 +70,11 @@ while (($# > 0)); do
             DASHBOARD_PORT="$2"
             shift 2
             ;;
+        --vectornav-wheel)
+            (($# >= 2)) || die "--vectornav-wheel requires a path"
+            VECTORNAV_WHEEL="$2"
+            shift 2
+            ;;
         --no-start)
             START_SERVICE=0
             shift
@@ -98,6 +106,13 @@ done
     die "--dashboard-port must be between 1 and 65535"
 [[ "${PORT}" =~ ^/dev/[A-Za-z0-9._/+:-]+$ ]] ||
     die "--port must be an absolute /dev path without whitespace"
+if [[ -n "${VECTORNAV_WHEEL}" ]]; then
+    [[ -f "${VECTORNAV_WHEEL}" ]] ||
+        die "VectorNav wheel not found: ${VECTORNAV_WHEEL}"
+    VECTORNAV_WHEEL="$(readlink -f -- "${VECTORNAV_WHEEL}")"
+    [[ "${VECTORNAV_WHEEL}" == *.whl ]] ||
+        die "--vectornav-wheel must point to a .whl file"
+fi
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR="$(dirname -- "${SCRIPT_DIR}")"
@@ -109,7 +124,11 @@ SOURCE_DIR="$(dirname -- "${SCRIPT_DIR}")"
 log "Installing Raspberry Pi OS dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install --yes build-essential curl python3-dev python3-venv
+APT_PACKAGES=(curl python3-venv)
+if [[ -z "${VECTORNAV_WHEEL}" ]]; then
+    APT_PACKAGES+=(build-essential python3-dev)
+fi
+apt-get install --yes "${APT_PACKAGES[@]}"
 python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' ||
     die "Python 3.10+ is required; use Raspberry Pi OS Bookworm or newer"
 
@@ -149,6 +168,17 @@ if [[ "${SOURCE_DIR}" != "${INSTALL_DIR}" ]]; then
 fi
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}" /var/lib/vectornav
 
+INSTALLED_VECTORNAV_WHEEL=""
+if [[ -n "${VECTORNAV_WHEEL}" ]]; then
+    install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" \
+        "${INSTALL_DIR}/wheels"
+    INSTALLED_VECTORNAV_WHEEL="${INSTALL_DIR}/wheels/$(basename -- "${VECTORNAV_WHEEL}")"
+    if [[ "${VECTORNAV_WHEEL}" != "${INSTALLED_VECTORNAV_WHEEL}" ]]; then
+        install -m 0644 -o "${SERVICE_USER}" -g "${SERVICE_USER}" \
+            "${VECTORNAV_WHEEL}" "${INSTALLED_VECTORNAV_WHEEL}"
+    fi
+fi
+
 log "Creating the Python environment"
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
     runuser -u "${SERVICE_USER}" -- env \
@@ -161,24 +191,37 @@ else
 fi
 
 log "Checking the core VectorNav extension"
-VECTORNAV_BUILD_HASH="$(
-    {
-        printf '%s\n' "vectornav-core-v2" "CXXFLAGS=-O0 -g0"
-        "${VENV_DIR}/bin/python" -VV
-        g++ -dumpmachine
-        g++ -dumpfullversion -dumpversion
-        find \
-            "${INSTALL_DIR}/cpp/include" \
-            "${INSTALL_DIR}/cpp/libs" \
-            "${INSTALL_DIR}/cpp/src" \
-            "${INSTALL_DIR}/python/include" \
-            "${INSTALL_DIR}/python/src" \
-            -type f -print0 | sort -z | xargs -0 sha256sum
-        sha256sum \
-            "${INSTALL_DIR}/python/pyproject.toml" \
-            "${INSTALL_DIR}/python/setup.py"
-    } | sha256sum | awk '{print $1}'
-)"
+if [[ -n "${INSTALLED_VECTORNAV_WHEEL}" ]]; then
+    PYTHON_TAG="$(
+        "${VENV_DIR}/bin/python" -c \
+            'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")'
+    )"
+    WHEEL_NAME="$(basename -- "${INSTALLED_VECTORNAV_WHEEL}")"
+    [[ "$(uname -m)" == "aarch64" ]] ||
+        die "the supplied wheel requires a 64-bit ARM Raspberry Pi OS"
+    [[ "${WHEEL_NAME}" =~ -${PYTHON_TAG}-${PYTHON_TAG}-(linux_aarch64|manylinux_[A-Za-z0-9_.]*_aarch64)\.whl$ ]] ||
+        die "wheel ${WHEEL_NAME} does not match ${PYTHON_TAG} on Linux ARM64"
+    VECTORNAV_BUILD_HASH="wheel:$(sha256sum "${INSTALLED_VECTORNAV_WHEEL}" | awk '{print $1}')"
+else
+    VECTORNAV_BUILD_HASH="$(
+        {
+            printf '%s\n' "vectornav-core-v2" "CXXFLAGS=-O0 -g0"
+            "${VENV_DIR}/bin/python" -VV
+            g++ -dumpmachine
+            g++ -dumpfullversion -dumpversion
+            find \
+                "${INSTALL_DIR}/cpp/include" \
+                "${INSTALL_DIR}/cpp/libs" \
+                "${INSTALL_DIR}/cpp/src" \
+                "${INSTALL_DIR}/python/include" \
+                "${INSTALL_DIR}/python/src" \
+                -type f -print0 | sort -z | xargs -0 sha256sum
+            sha256sum \
+                "${INSTALL_DIR}/python/pyproject.toml" \
+                "${INSTALL_DIR}/python/setup.py"
+        } | sha256sum | awk '{print $1}'
+    )"
+fi
 
 INSTALLED_BUILD_HASH=""
 if [[ -f "${VECTORNAV_BUILD_STAMP}" ]]; then
@@ -191,16 +234,26 @@ if ((FORCE_REBUILD == 0)) && \
         "${VENV_DIR}/bin/python" -c "import vectornav"; then
     echo "VectorNav native sources are unchanged; reusing the installed extension."
 else
-    log "Building and installing the core VectorNav extension"
-    echo "Native compilation can take several minutes on a Pi Zero 2 W."
-    runuser -u "${SERVICE_USER}" -- env \
-        CXXFLAGS="-O0 -g0" \
-        MAX_JOBS=1 \
-        UV_NO_CONFIG=1 \
-        /usr/local/bin/uv --verbose pip install \
-        --reinstall \
-        --python "${VENV_DIR}/bin/python" \
-        "${INSTALL_DIR}/python"
+    if [[ -n "${INSTALLED_VECTORNAV_WHEEL}" ]]; then
+        log "Installing the prebuilt VectorNav extension"
+        runuser -u "${SERVICE_USER}" -- env \
+            UV_NO_CONFIG=1 \
+            /usr/local/bin/uv pip install \
+            --reinstall \
+            --python "${VENV_DIR}/bin/python" \
+            "${INSTALLED_VECTORNAV_WHEEL}"
+    else
+        log "Building and installing the core VectorNav extension"
+        echo "Native compilation can take several minutes on a Pi Zero 2 W."
+        runuser -u "${SERVICE_USER}" -- env \
+            CXXFLAGS="-O0 -g0" \
+            MAX_JOBS=1 \
+            UV_NO_CONFIG=1 \
+            /usr/local/bin/uv --verbose pip install \
+            --reinstall \
+            --python "${VENV_DIR}/bin/python" \
+            "${INSTALL_DIR}/python"
+    fi
     printf '%s\n' "${VECTORNAV_BUILD_HASH}" >"${VECTORNAV_BUILD_STAMP}.tmp"
     chown "${SERVICE_USER}:${SERVICE_USER}" "${VECTORNAV_BUILD_STAMP}.tmp"
     chmod 0644 "${VECTORNAV_BUILD_STAMP}.tmp"
