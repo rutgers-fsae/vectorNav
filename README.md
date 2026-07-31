@@ -51,8 +51,10 @@ sudo ./deploy/install-rpi.sh
 ```
 
 Use `--port /dev/ttyACM0`, `--baud`, `--rate`, or `--dashboard-port` to
-override the defaults. Use `--no-start` to install and enable the services
-without starting them immediately:
+override the defaults. The installer fingerprints the native SDK sources and
+skips its slow C++ rebuild when they are unchanged. Use `--rebuild` to force a
+new native build, or `--no-start` to install and enable the services without
+starting them immediately:
 
 ```bash
 sudo ./deploy/install-rpi.sh --port /dev/ttyUSB0 --rate 40 --no-start
@@ -78,13 +80,15 @@ sudo cp --archive . /opt/vectornav/
 sudo chown --recursive vectornav:vectornav /opt/vectornav /var/lib/vectornav
 ```
 
-Build the core-only extension with one compiler process. Build isolation
-installs pybind11 temporarily; it is not retained as a runtime dependency:
+Build the core-only extension without compiler optimization on the Pi. This
+substantially reduces build time and has negligible impact on this 10 Hz
+logger. Build isolation installs pybind11 temporarily; it is not retained as a
+runtime dependency:
 
 ```bash
 sudo -u vectornav python3 -m venv /opt/vectornav/venv
 sudo -u vectornav /opt/vectornav/venv/bin/python -m pip install --upgrade pip
-sudo -u vectornav env CXXFLAGS=-O2 MAX_JOBS=1 \
+sudo -u vectornav env CXXFLAGS="-O0 -g0" MAX_JOBS=1 \
   /opt/vectornav/venv/bin/python -m pip install /opt/vectornav/python
 sudo -u vectornav /usr/local/bin/uv pip install \
   --python /opt/vectornav/venv/bin/python /opt/vectornav/dashboard

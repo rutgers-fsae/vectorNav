@@ -9,11 +9,13 @@ SERVICE_NAME="vectornav-logger.service"
 DASHBOARD_SERVICE_NAME="vectornav-dashboard.service"
 CONFIG_FILE="/etc/default/vectornav-logger"
 AUTH_FILE="/var/lib/vectornav/dashboard-auth.json"
+VECTORNAV_BUILD_STAMP="${INSTALL_DIR}/.vectornav-build.sha256"
 PORT="/dev/ttyUSB0"
 BAUD="460800"
 RATE="40"
 DASHBOARD_PORT="8080"
 START_SERVICE=1
+FORCE_REBUILD=0
 
 usage() {
     cat <<'EOF'
@@ -27,6 +29,7 @@ Options:
   --baud RATE       Serial baud rate (default: 460800)
   --rate DIVISOR    VN-300 400 Hz rate divisor (default: 40, or 10 Hz)
   --dashboard-port  Dashboard HTTP port (default: 8080)
+  --rebuild         Rebuild the native VectorNav extension even if unchanged
   --no-start        Install and enable the service without starting it now
   -h, --help        Show this help
 EOF
@@ -66,6 +69,10 @@ while (($# > 0)); do
             ;;
         --no-start)
             START_SERVICE=0
+            shift
+            ;;
+        --rebuild)
+            FORCE_REBUILD=1
             shift
             ;;
         -h|--help)
@@ -153,15 +160,52 @@ else
     echo "Reusing ${VENV_DIR}"
 fi
 
-log "Building and installing the core VectorNav extension"
-runuser -u "${SERVICE_USER}" -- env \
-    CXXFLAGS=-O2 \
-    MAX_JOBS=1 \
-    UV_NO_CONFIG=1 \
-    /usr/local/bin/uv pip install \
-    --reinstall \
-    --python "${VENV_DIR}/bin/python" \
-    "${INSTALL_DIR}/python"
+log "Checking the core VectorNav extension"
+VECTORNAV_BUILD_HASH="$(
+    {
+        printf '%s\n' "vectornav-core-v2" "CXXFLAGS=-O0 -g0"
+        "${VENV_DIR}/bin/python" -VV
+        g++ -dumpmachine
+        g++ -dumpfullversion -dumpversion
+        find \
+            "${INSTALL_DIR}/cpp/include" \
+            "${INSTALL_DIR}/cpp/libs" \
+            "${INSTALL_DIR}/cpp/src" \
+            "${INSTALL_DIR}/python/include" \
+            "${INSTALL_DIR}/python/src" \
+            -type f -print0 | sort -z | xargs -0 sha256sum
+        sha256sum \
+            "${INSTALL_DIR}/python/pyproject.toml" \
+            "${INSTALL_DIR}/python/setup.py"
+    } | sha256sum | awk '{print $1}'
+)"
+
+INSTALLED_BUILD_HASH=""
+if [[ -f "${VECTORNAV_BUILD_STAMP}" ]]; then
+    read -r INSTALLED_BUILD_HASH <"${VECTORNAV_BUILD_STAMP}" || true
+fi
+
+if ((FORCE_REBUILD == 0)) && \
+    [[ "${INSTALLED_BUILD_HASH}" == "${VECTORNAV_BUILD_HASH}" ]] && \
+    runuser -u "${SERVICE_USER}" -- \
+        "${VENV_DIR}/bin/python" -c "import vectornav"; then
+    echo "VectorNav native sources are unchanged; reusing the installed extension."
+else
+    log "Building and installing the core VectorNav extension"
+    echo "Native compilation can take several minutes on a Pi Zero 2 W."
+    runuser -u "${SERVICE_USER}" -- env \
+        CXXFLAGS="-O0 -g0" \
+        MAX_JOBS=1 \
+        UV_NO_CONFIG=1 \
+        /usr/local/bin/uv --verbose pip install \
+        --reinstall \
+        --python "${VENV_DIR}/bin/python" \
+        "${INSTALL_DIR}/python"
+    printf '%s\n' "${VECTORNAV_BUILD_HASH}" >"${VECTORNAV_BUILD_STAMP}.tmp"
+    chown "${SERVICE_USER}:${SERVICE_USER}" "${VECTORNAV_BUILD_STAMP}.tmp"
+    chmod 0644 "${VECTORNAV_BUILD_STAMP}.tmp"
+    mv -f "${VECTORNAV_BUILD_STAMP}.tmp" "${VECTORNAV_BUILD_STAMP}"
+fi
 
 log "Verifying the VectorNav extension"
 runuser -u "${SERVICE_USER}" -- \
