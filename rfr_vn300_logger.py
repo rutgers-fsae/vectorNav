@@ -284,14 +284,16 @@ class LocalIpc:
         if self.control is None or not address:
             return
         try:
-            self.control.sendto(json.dumps(payload).encode(), address)
+            self.control.sendto(json.dumps(payload, default=str).encode(), address)
         except OSError:
             LOGGER.debug("Control client disappeared before reply")
 
     def publish(self, payload: dict[str, Any]) -> None:
         try:
             self.telemetry.sendto(
-                json.dumps(payload, separators=(",", ":")).encode(),
+                json.dumps(
+                    payload, separators=(",", ":"), default=str
+                ).encode(),
                 str(self.telemetry_path),
             )
         except OSError:
@@ -575,15 +577,16 @@ def run(args: argparse.Namespace) -> int:
             raise RuntimeError(f"failed to switch to {args.baud} baud")
         model_register = vectornav.Registers.System.Model()
         sensor.readRegister(model_register)
+        model = str(model_register.model)
         output = configure_binary_output(sensor, vectornav.Registers, args.rate)
         LOGGER.info(
             "Connected to %s on %s at %d baud; output %.3f Hz",
-            model_register.model,
+            model,
             args.port,
             args.baud,
             400.0 / args.rate,
         )
-        return sensor, output, model_register.model
+        return sensor, output, model
 
     try:
         sensor, output, model = connect()

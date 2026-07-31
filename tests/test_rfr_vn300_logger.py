@@ -1,4 +1,5 @@
 import csv
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -44,6 +45,22 @@ class FakeIpc:
 
     def publish(self, payload):
         self.published.append(payload)
+
+
+class FakeDatagramSocket:
+    def __init__(self):
+        self.sent = []
+
+    def sendto(self, payload, address):
+        self.sent.append((payload, address))
+
+    def close(self):
+        pass
+
+
+class StringOnlyValue:
+    def __str__(self):
+        return "VN-300T-CR"
 
 
 def complete_measurement(matches=True):
@@ -124,6 +141,20 @@ class LoggerTests(unittest.TestCase):
             )
             ipc.open()
             ipc.publish({"version": 1})
+            ipc.close()
+
+    def test_dashboard_ipc_stringifies_sdk_wrapper_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ipc = logger.LocalIpc(
+                Path(directory) / "control.sock",
+                Path(directory) / "telemetry.sock",
+            )
+            ipc.telemetry.close()
+            telemetry = FakeDatagramSocket()
+            ipc.telemetry = telemetry
+            ipc.publish({"model": StringOnlyValue()})
+            payload, _address = telemetry.sent[0]
+            self.assertEqual(json.loads(payload), {"model": "VN-300T-CR"})
             ipc.close()
 
     def make_engine(self, directory, clock=None):
