@@ -144,7 +144,8 @@ chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}" /var/lib/vectornav
 
 log "Creating the Python environment"
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
-    runuser -u "${SERVICE_USER}" -- \
+    runuser -u "${SERVICE_USER}" -- env \
+        UV_NO_CONFIG=1 \
         /usr/local/bin/uv venv \
         --python /usr/bin/python3 \
         "${VENV_DIR}"
@@ -156,6 +157,7 @@ log "Building and installing the core VectorNav extension"
 runuser -u "${SERVICE_USER}" -- env \
     CXXFLAGS=-O2 \
     MAX_JOBS=1 \
+    UV_NO_CONFIG=1 \
     /usr/local/bin/uv pip install \
     --reinstall \
     --python "${VENV_DIR}/bin/python" \
@@ -167,7 +169,8 @@ runuser -u "${SERVICE_USER}" -- \
     "from vectornav import Sensor, Registers; print('VectorNav import successful')"
 
 log "Installing the dashboard"
-runuser -u "${SERVICE_USER}" -- \
+runuser -u "${SERVICE_USER}" -- env \
+    UV_NO_CONFIG=1 \
     /usr/local/bin/uv pip install \
     --reinstall \
     --python "${VENV_DIR}/bin/python" \
