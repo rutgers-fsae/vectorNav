@@ -103,6 +103,9 @@ class LoggerTests(unittest.TestCase):
         self.assertEqual(output.gnss.gnss1PosUncertainty, 1)
         self.assertEqual(output.ins.posU, 1)
         self.assertEqual(sensor.registers[1].asyncMode.serial1, 0)
+        self.assertEqual(sensor.registers[1].rateDivisor, 40)
+        self.assertEqual(sensor.registers[2].asyncMode.serial1, 0)
+        self.assertEqual(sensor.registers[2].rateDivisor, 40)
 
     def test_measurement_contains_uncertainties(self):
         row = logger.measurement_to_row(complete_measurement(), "timestamp")

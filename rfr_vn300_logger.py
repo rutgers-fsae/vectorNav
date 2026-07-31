@@ -139,6 +139,7 @@ def configure_binary_output(sensor: Any, registers: Any, rate: int) -> Any:
     ):
         disabled_output = output_type()
         disabled_output.asyncMode.serial1 = 0
+        disabled_output.rateDivisor = rate
         sensor.writeRegister(disabled_output)
     return output
 
