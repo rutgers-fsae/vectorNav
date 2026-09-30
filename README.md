@@ -174,3 +174,43 @@ The logger and dashboard processes handle systemd shutdown cleanly. CSV data
 is flushed regularly, forced to storage every five seconds, and synced once
 more before a recording closes. Files are written to
 `/var/lib/vectornav/logs`.
+
+## Nano coolant logging over GPIO UART
+
+Flash `firmware/arduino/PWM26/PWM26.ino` onto a classic ATmega328P Nano.
+It sends `time_ms,coolant_temp_c,fan_duty_percent,pump_duty_percent` CSV
+at 1 Hz, 115200 baud, 8N1. The Nano controls the fan and pump independently;
+there is no longer an SD logger on the Nano.
+
+For a 5 V Nano, connect D1/TX through 1 kohm to a junction connected to
+Pi GPIO15/RX (physical pin 10). Connect 2 kohm from that junction to ground,
+and connect Nano GND to Pi GND (physical pin 6). This divides 5 V to about
+3.3 V; never connect a 5 V TX directly to Pi GPIO. No RX connection to the
+Nano is needed. Keep the boards' existing power supplies and use short wiring.
+
+On the Pi, use `sudo raspi-config` to disable the serial login shell and
+enable serial hardware, then reboot. Verify `/dev/serial0` exists. The
+Zero 2 W UART shares resources with Bluetooth; configure that assignment
+if needed. The VectorNav must use a separate device (normally `/dev/ttyUSB0`).
+
+Install both loggers with:
+
+```bash
+sudo ./deploy/install-rpi.sh --pwm-port /dev/serial0
+journalctl -u pwm-logger.service -f
+```
+
+Repeat `--pwm-port` on later installs to retain coolant logging; omitting it
+disables the service. `--no-start` enables it without starting it.
+Override `PWM_PORT` in `/etc/default/vectornav-logger` if necessary.
+The reader uses only the Python standard library. It skips headers, malformed
+rows, and oversized lines, and restarts after serial errors. Each service
+start creates a separate CSV in `/var/lib/vectornav/logs/coolant`, with UTC
+receive time and Nano uptime. The existing dashboard and recording controls
+apply to VectorNav only; coolant logging runs continuously and independently.
+A temperature of -999 is the Nano's thermistor fault indicator.
+
+Samples sent while the Pi is booting or the logger is down are lost. Receive
+timestamps allow approximate comparison with VectorNav; they are not hardware
+synchronization. Each accepted row is flushed and fsynced, but abrupt power
+loss still depends on the SD card's durability.

@@ -1,0 +1,25 @@
+[Unit]
+Description=Nano coolant CSV logger
+After=local-fs.target
+
+[Service]
+Type=simple
+User=vectornav
+Group=vectornav
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/vectornav
+Environment=PWM_PORT=/dev/serial0
+EnvironmentFile=-/etc/default/vectornav-logger
+ExecStart=/opt/vectornav/venv/bin/python /opt/vectornav/pwm_logger.py --port ${PWM_PORT} --output-dir /var/lib/vectornav/logs/coolant
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/vectornav
+
+[Install]
+WantedBy=multi-user.target
