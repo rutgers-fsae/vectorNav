@@ -206,8 +206,11 @@ Override `PWM_PORT` in `/etc/default/vectornav-logger` if necessary.
 The reader uses only the Python standard library. It skips headers, malformed
 rows, and oversized lines, and restarts after serial errors. Each service
 start creates a separate CSV in `/var/lib/vectornav/logs/coolant`, with UTC
-receive time and Nano uptime. The existing dashboard and recording controls
-apply to VectorNav only; coolant logging runs continuously and independently.
+receive time and Nano uptime. The dashboard shows live coolant temperature, fan/pump duty, Nano uptime,
+and sample time, with stale data marked after five seconds. PWM CSVs have
+their own download archive, including complete-row snapshots of active files.
+Recording controls apply to VectorNav only; coolant logging runs continuously
+and independently.
 A temperature of -999 is the Nano's thermistor fault indicator.
 
 Samples sent while the Pi is booting or the logger is down are lost. Receive

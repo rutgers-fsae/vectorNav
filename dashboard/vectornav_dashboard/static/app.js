@@ -6,6 +6,9 @@ let latest = {};
 let rotation = 0;
 let operator = false;
 let toastTimer;
+let airspeedZeroing = false;
+let airspeedRequestPending = false;
+let airspeedOnline = false;
 
 function fmt(value, digits = 1) {
   return value == null || Number.isNaN(Number(value)) ? "—" : Number(value).toFixed(digits);
@@ -25,6 +28,7 @@ function setOperator(value) {
   operator = value;
   $("controls-panel").classList.toggle("locked", !value);
   $("controls-panel").querySelectorAll("button,select,input").forEach(el => el.disabled = !value);
+  $("zero-airspeed").disabled = !value || !airspeedOnline || airspeedZeroing || airspeedRequestPending;
   $("lock-label").textContent = value ? "Unlocked" : "Locked";
   $("operator-button").textContent = value ? "Operator logout" : "Operator login";
 }
@@ -118,10 +122,17 @@ async function refreshStatus() {
   try {
     const response = await fetch("/api/status"), data = await response.json();
     setOperator(data.operator); if (data.telemetry?.version) updateTelemetry(data.telemetry);
+    const pwm = data.pwm || {}, live = pwm.connected;
+    $("pwm-status").textContent = live ? "Receiving · 1 Hz" : "No recent samples";
+    $("pwm-coolant").textContent = !live ? "—" : pwm.coolant_temp_c === -999 ? "Fault" : fmt(pwm.coolant_temp_c, 2);
+    $("pwm-fan").textContent = live ? fmt(pwm.fan_duty_percent, 0) : "—";
+    $("pwm-pump").textContent = live ? fmt(pwm.pump_duty_percent, 0) : "—";
+    $("pwm-uptime").textContent = live ? fmt(pwm.time_ms / 1000, 0) : "—";
+    $("pwm-sample-time").textContent = pwm.received_at_utc ? `Last sample: ${new Date(pwm.received_at_utc).toLocaleString()}` : "No sample received";
     $("viewer-count").textContent = `${Math.max(1, data.viewers)} viewer${data.viewers === 1 ? "" : "s"}`;
     $("disk").textContent = bytes(data.health.disk_free);
     $("temperature").textContent = data.health.cpu_temp_c == null ? "—" : `${fmt(data.health.cpu_temp_c)} °C`;
-  } catch { $("connection-pill").className = "pill offline"; }
+  } catch { $("connection-pill").className = "pill offline"; $("pwm-status").textContent = "Dashboard unavailable"; ["pwm-coolant", "pwm-fan", "pwm-pump", "pwm-uptime"].forEach(id => $(id).textContent = "—"); }
 }
 async function refreshSessions() {
   const list = $("sessions-list");
@@ -130,6 +141,13 @@ async function refreshSessions() {
     if (!data.sessions.length) { list.innerHTML = '<p class="empty-copy">No completed sessions found.</p>'; return; }
     list.innerHTML = data.sessions.map(s => `<div class="session-row"><strong>${s.filename}</strong><span>${bytes(s.size)} · ${new Date(s.modified * 1000).toLocaleString()}</span><a href="/api/sessions/${encodeURIComponent(s.filename)}">Download CSV</a></div>`).join("");
   } catch { list.innerHTML = '<p class="empty-copy">Unable to load sessions.</p>'; }
+}
+async function refreshPwmSessions() {
+  const list = $("pwm-sessions-list");
+  try {
+    const response = await fetch("/api/pwm/sessions"), data = await response.json();
+    list.innerHTML = data.sessions.length ? data.sessions.map(s => `<div class="session-row"><strong>${s.filename}</strong><span>${bytes(s.size)} · ${new Date(s.modified * 1000).toLocaleString()}</span><a href="/api/pwm/sessions/${encodeURIComponent(s.filename)}">Download CSV</a></div>`).join("") : '<p class="empty-copy">No PWM recordings found.</p>';
+  } catch { list.innerHTML = '<p class="empty-copy">Unable to load PWM recordings.</p>'; }
 }
 async function sendCommand(name, payload = {}) {
   const response = await fetch(`/api/commands/${name}`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
@@ -143,6 +161,47 @@ document.querySelectorAll("[data-command]").forEach(button => button.addEventLis
   button.disabled = true; try { await sendCommand(button.dataset.command); if (["stop","new-session"].includes(button.dataset.command)) refreshSessions(); }
   catch (error) { toast(error.message, true); } finally { button.disabled = !operator; }
 }));
+function showAirspeed(state) {
+  airspeedOnline = true;
+  airspeedZeroing = state.state === "zeroing";
+  $("airspeed-zero-status").textContent = airspeedZeroing
+    ? `Zeroing: ${state.samples} fresh samples · ${fmt(state.elapsed_s)} s (at least 20 samples and 5 s)`
+    : state.message;
+  $("zero-airspeed").disabled = !operator || airspeedZeroing || airspeedRequestPending;
+}
+async function refreshAirspeed() {
+  if (airspeedRequestPending) return;
+  try {
+    const response = await fetch("/api/airspeed");
+    if (!response.ok) throw new Error("Airspeed logger unavailable; check its service.");
+    showAirspeed((await response.json()).airspeed);
+  } catch (error) {
+    airspeedOnline = false;
+    $("airspeed-zero-status").textContent = error.message;
+    $("zero-airspeed").disabled = true;
+  }
+}
+$("zero-airspeed").addEventListener("click", async () => {
+  if (!confirm("Zero airspeed? Keep both ports at equal pressure in still air. Speed will be blank while zeroing.")) return;
+  airspeedRequestPending = true;
+  $("zero-airspeed").disabled = true;
+  try {
+    const response = await fetch("/api/airspeed/zero", {method: "POST"});
+    const text = await response.text();
+    let data; try { data = JSON.parse(text); } catch { data = {error: text}; }
+    if (!response.ok || !data.success) throw new Error(data.error || "Unable to zero airspeed");
+    showAirspeed(data.airspeed);
+  } catch (error) { toast(error.message, true); }
+  finally { airspeedRequestPending = false; await refreshAirspeed(); }
+});
+let airspeedPolling = false;
+setInterval(async () => {
+  if (airspeedPolling) return;
+  airspeedPolling = true;
+  try { await refreshAirspeed(); } finally { airspeedPolling = false; }
+}, 1000);
+refreshAirspeed();
+
 $("add-marker").addEventListener("click", async () => {
   try { await sendCommand("marker", {type: $("marker-type").value, note: $("marker-note").value}); $("marker-note").value = ""; }
   catch (error) { toast(error.message, true); }
@@ -161,10 +220,11 @@ $("rotate-left").onclick = () => { rotation -= Math.PI / 12; draw(); };
 $("rotate-right").onclick = () => { rotation += Math.PI / 12; draw(); };
 $("reset-view").onclick = () => { rotation = 0; draw(); };
 $("refresh-sessions").onclick = refreshSessions;
+$("refresh-pwm").onclick = refreshPwmSessions;
 
 window.addEventListener("resize", resizeCanvas);
-resizeCanvas(); refreshStatus(); refreshSessions();
-setInterval(refreshStatus, 10000); setInterval(refreshSessions, 30000);
+resizeCanvas(); refreshStatus(); refreshSessions(); refreshPwmSessions();
+setInterval(refreshStatus, 2000); setInterval(refreshSessions, 30000); setInterval(refreshPwmSessions, 30000);
 const events = new EventSource("/api/stream");
 events.onmessage = event => updateTelemetry(JSON.parse(event.data));
 events.onerror = () => { $("connection-pill").className = "pill offline"; $("connection-pill").innerHTML = "<i></i>Dashboard reconnecting"; };

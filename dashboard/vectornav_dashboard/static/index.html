@@ -75,6 +75,17 @@
         </dl>
       </section>
 
+      <section class="panel telemetry-panel">
+        <div class="panel-heading compact"><h2>Coolant / PWM</h2><span id="pwm-status" class="subtle">Waiting for samples</span></div>
+        <div class="metric-grid">
+          <article><span>Coolant</span><strong id="pwm-coolant">—</strong><small>°C</small></article>
+          <article><span>Fan duty</span><strong id="pwm-fan">—</strong><small>%</small></article>
+          <article><span>Pump duty</span><strong id="pwm-pump">—</strong><small>%</small></article>
+          <article><span>Nano uptime</span><strong id="pwm-uptime">—</strong><small>seconds</small></article>
+        </div>
+        <p id="pwm-sample-time" class="subtle">No sample received</p>
+      </section>
+
       <section id="controls-panel" class="panel controls-panel locked">
         <div class="panel-heading compact">
           <div>
@@ -90,6 +101,11 @@
           <button data-command="reset-laps">Reset laps</button>
           <button data-command="set-start-finish" data-confirm="Use the current INS position as start/finish?">Set start/finish</button>
           <button data-command="reconnect" data-confirm="Reconnect the sensor and rotate the active session?">Reconnect sensor</button>
+        </div>
+        <div class="marker-box">
+          <button id="zero-airspeed">Zero airspeed</button>
+          <p id="airspeed-zero-status" role="status" aria-live="polite">Checking airspeed logger…</p>
+          <p class="subtle">Keep both pressure ports at equal pressure in still air during zeroing.</p>
         </div>
         <div class="marker-box">
           <label for="marker-type">Event marker</label>
@@ -116,6 +132,11 @@
       <div id="sessions-list" class="sessions-list">
         <p class="empty-copy">No completed sessions found.</p>
       </div>
+    </section>
+    <section class="panel sessions-panel">
+      <div class="panel-heading compact"><div><p class="eyebrow">PWM ARCHIVE</p><h2>Coolant recordings</h2></div><button id="refresh-pwm" class="ghost">Refresh</button></div>
+      <p class="subtle">Logging runs independently. Downloads include all complete rows saved so far.</p>
+      <div id="pwm-sessions-list" class="sessions-list"><p class="empty-copy">No PWM recordings found.</p></div>
     </section>
   </main>
 
