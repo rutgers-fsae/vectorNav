@@ -62,6 +62,8 @@ COLS = [
     "ins_lat", "ins_lon", "ins_alt",
     "ins_vn", "ins_ve", "ins_vd", "ins_pos_u", "ins_vel_u",
     "event_timestamp", "event_type", "event_note",
+    "lap_count", "current_lap_s", "last_lap_s",
+    "start_finish_lat", "start_finish_lon",
 ]
 
 
@@ -522,6 +524,16 @@ class LoggerEngine:
         self.latest_row = row
         now = self.monotonic()
         self.update_lap(row, now)
+        row.update({
+            "lap_count": self.lap_count,
+            "current_lap_s": (
+                max(0.0, now - self.last_lap_time)
+                if self.last_lap_time is not None else None
+            ),
+            "last_lap_s": self.last_lap_duration,
+            "start_finish_lat": self.track["start_lat"],
+            "start_finish_lon": self.track["start_lon"],
+        })
         if self.recording and self.writer is not None and self.csv_file is not None:
             if self.pending_markers:
                 row.update(self.pending_markers.popleft())

@@ -219,6 +219,43 @@ class LoggerTests(unittest.TestCase):
             loaded = logger.load_track_config(Path(directory) / "config.json")
             self.assertEqual(loaded, {"start_lat": 40.2, "start_lon": -74.1})
 
+    def test_csv_records_laps_and_start_finish_at_each_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            now = 100.0
+            engine, _ipc = self.make_engine(directory, clock=lambda: now)
+            engine.start_session()
+            measurement = complete_measurement()
+            engine.consume_measurement(measurement)
+            measurement.ins.posLla = namespace(
+                lat=logger.DEFAULT_START_LAT, lon=logger.DEFAULT_START_LON, alt=0,
+            )
+            now = 101.0
+            engine.consume_measurement(measurement)
+            now = 111.0
+            engine.consume_measurement(measurement)
+            now = 122.0
+            engine.consume_measurement(measurement)
+            engine.handle_command({"command": "reset_laps"})
+            measurement.ins.posLla = None
+            engine.consume_measurement(measurement)
+            engine.latest_row = {"ins_lat": 40.2, "ins_lon": -74.1}
+            self.assertTrue(engine.handle_command({"command": "set_start_finish"})["success"])
+            engine.consume_measurement(measurement)
+            engine.stop_session()
+
+            with engine.filename.open(newline="") as csv_file:
+                records = list(csv.DictReader(csv_file))
+            self.assertEqual(
+                [(r["lap_count"], r["current_lap_s"], r["last_lap_s"]) for r in records],
+                [("0", "", ""), ("1", "0.0", ""), ("1", "10.0", ""),
+                 ("2", "0.0", "21.0"), ("0", "", ""), ("0", "", "")],
+            )
+            for row in records[:5]:
+                self.assertEqual(float(row["start_finish_lat"]), logger.DEFAULT_START_LAT)
+                self.assertEqual(float(row["start_finish_lon"]), logger.DEFAULT_START_LON)
+            self.assertEqual(float(records[5]["start_finish_lat"]), 40.2)
+            self.assertEqual(float(records[5]["start_finish_lon"]), -74.1)
+
     def test_reconnect_rotates_active_session(self):
         with tempfile.TemporaryDirectory() as directory:
             engine, _ipc = self.make_engine(directory)

@@ -276,12 +276,13 @@ runuser -u "${SERVICE_USER}" -- \
     "${VENV_DIR}/bin/python" -c \
     "from vectornav import Sensor, Registers; print('VectorNav import successful')"
 
-log "Installing the dashboard"
+log "Installing the logger and dashboard"
 runuser -u "${SERVICE_USER}" -- env \
     UV_NO_CONFIG=1 \
     /usr/local/bin/uv pip install \
     --reinstall \
     --python "${VENV_DIR}/bin/python" \
+    "${INSTALL_DIR}" \
     "${INSTALL_DIR}/dashboard"
 
 GENERATED_PIN=""
