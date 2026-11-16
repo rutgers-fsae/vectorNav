@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rfr-vectornav-logger"
+version = "1.1.0"
+description = "RFR VN-300 CSV logger with lap timing and start/finish coordinates"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.scripts]
+rfr-vectornav-logger = "rfr_vn300_logger:main"
+
+[tool.setuptools]
+py-modules = ["rfr_vn300_logger"]

@@ -29,6 +29,11 @@ class InstallRpiTests(unittest.TestCase):
         self.assertIn('python:${PYTHON_VERSION}-slim-bookworm', DOCKERFILE)
         self.assertIn('VECTORNAV_BUILD_PLUGINS=0', DOCKERFILE)
 
+    def test_installer_installs_packaged_logger_used_by_service(self):
+        service = (Path(__file__).parents[1] / "deploy" / "vectornav-logger.service").read_text()
+        self.assertIn('"${INSTALL_DIR}" \\\n    "${INSTALL_DIR}/dashboard"', SCRIPT)
+        self.assertIn('ExecStart=/opt/vectornav/venv/bin/rfr-vectornav-logger ', service)
+
 
 if __name__ == "__main__":
     unittest.main()

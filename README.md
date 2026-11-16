@@ -37,6 +37,48 @@ separate trail segment.
 CSV logging remains at full rate. Dashboard telemetry is best-effort at 5 Hz,
 so dashboard or Wi-Fi problems cannot block recording.
 
+### Recorded laps and start/finish
+
+Each CSV sample includes `lap_count`, `current_lap_s`, `last_lap_s`,
+`start_finish_lat`, and `start_finish_lon`. Coordinates are latitude/longitude
+in degrees for the single shared start/finish point, using the same coordinate
+system as `ins_lat`/`ins_lon`. They are recorded on every row so a start/finish
+change during a session is preserved. The DAQ website can use these columns
+for a map marker; its map renderer must read them explicitly.
+
+Lap timing uses the logger's monotonic clock. `current_lap_s` is blank until
+the first detection; `last_lap_s` is blank until a second detection. Resetting
+laps, changing start/finish, or starting a new recording resets the timing.
+Detection behavior is unchanged: being within 5 meters of start/finish with
+more than 20 seconds since the previous detection increments `lap_count`.
+The first detection counts as 1, so this is not a completed-lap total.
+
+### Logger wheel update on an existing Pi
+
+The Python logger is packaged separately from the native `vectornav` SDK.
+Build it with `uv build --wheel`; the resulting
+`rfr_vectornav_logger-1.1.0-py3-none-any.whl` supports Python 3.10+ on the Pi
+without recompiling the SDK. It requires the existing VectorNav SDK installation.
+
+Copy the logger wheel and `deploy/vectornav-logger.service` to the Pi, then
+run these commands from the directory containing both files. Stop recording
+first; restarting the logger creates a new recording session.
+
+```bash
+sudo systemctl stop vectornav-logger.service
+sudo -u vectornav /usr/local/bin/uv pip install --no-deps --reinstall \
+  --python /opt/vectornav/venv/bin/python \
+  ./rfr_vectornav_logger-1.1.0-py3-none-any.whl
+sudo install -m 0644 vectornav-logger.service /etc/systemd/system/vectornav-logger.service
+sudo systemctl daemon-reload
+sudo systemctl restart vectornav-logger.service
+sudo systemctl --no-pager status vectornav-logger.service
+```
+
+The updated service runs the wheel's console entry point instead of the old
+loose Python script. Existing configuration, operator PIN, and recorded CSVs
+are preserved; only new recordings contain the additional columns.
+
 ## Raspberry Pi Zero 2 W installation
 
 Raspberry Pi OS Lite 64-bit Bookworm or newer with Python 3.10+ is recommended.
@@ -98,7 +140,7 @@ sudo -u vectornav /opt/vectornav/venv/bin/python -m pip install --upgrade pip
 sudo -u vectornav env CXXFLAGS="-O0 -g0" MAX_JOBS=1 \
   /opt/vectornav/venv/bin/python -m pip install /opt/vectornav/python
 sudo -u vectornav /usr/local/bin/uv pip install \
-  --python /opt/vectornav/venv/bin/python /opt/vectornav/dashboard
+  --python /opt/vectornav/venv/bin/python /opt/vectornav /opt/vectornav/dashboard
 sudo -u vectornav /opt/vectornav/venv/bin/python \
   -m vectornav_dashboard.auth \
   --create /var/lib/vectornav/dashboard-auth.json
