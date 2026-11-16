@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
+from datetime import datetime, timezone
+import math
 import asyncio
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -190,13 +193,14 @@ def require_operator(request: web.Request) -> None:
         raise web.HTTPUnauthorized(text="Operator authentication required")
 
 
-def control_request(path: Path, command: str, payload: dict[str, Any]) -> dict[str, Any]:
+def control_request(path: Path, command: str, payload: dict[str, Any], timeout: float = 15) -> dict[str, Any]:
     request_id = uuid.uuid4().hex
     client_path = path.parent / f"dashboard-{os.getpid()}-{request_id[:8]}.sock"
     client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     try:
         client.bind(str(client_path))
-        client.settimeout(15)
+        os.chmod(client_path, 0o660)
+        client.settimeout(timeout)
         client.sendto(
             json.dumps(
                 {"request_id": request_id, "command": command, "payload": payload}
@@ -216,11 +220,93 @@ async def index(_request: web.Request) -> web.FileResponse:
     return web.FileResponse(STATIC_DIR / "index.html")
 
 
+PWM_NAME = re.compile(r"^coolant_[0-9]{8}T[0-9]{6}_[0-9]{6}Z\.csv$")
+
+
+def pwm_files(log_dir: Path) -> list[Path]:
+    return sorted((path for path in (log_dir / "coolant").glob("coolant_*.csv")
+                   if PWM_NAME.fullmatch(path.name) and path.is_file() and not path.is_symlink()), reverse=True)
+
+
+def pwm_status(log_dir: Path) -> dict[str, Any]:
+    files = pwm_files(log_dir)
+    if not files:
+        return {"connected": False}
+    path = files[0]
+    result = {"connected": False, "filename": path.name}
+    try:
+        with path.open("rb") as source:
+            source.seek(0, os.SEEK_END)
+            size = source.tell()
+            start = max(0, size - 1024)
+            source.seek(start)
+            tail = source.read(1024)
+        lines = tail.split(b"\n")[:-1]
+        if start:
+            lines = lines[1:]
+        for line in reversed(lines):
+            fields = next(csv.reader([line.decode("ascii")]))
+            if len(fields) != 5 or fields[0] == "received_at_utc":
+                continue
+            stamp = datetime.fromisoformat(fields[0])
+            uptime, temperature, fan, pump = int(fields[1]), float(fields[2]), int(fields[3]), int(fields[4])
+            if not (0 <= uptime <= 0xFFFFFFFF and math.isfinite(temperature)
+                    and 0 <= fan <= 100 and 0 <= pump <= 100):
+                continue
+            age = (datetime.now(timezone.utc) - stamp).total_seconds()
+            result.update(connected=0 <= age < 5, received_at_utc=fields[0], time_ms=uptime,
+                          coolant_temp_c=temperature, fan_duty_percent=fan, pump_duty_percent=pump)
+            break
+    except (OSError, ValueError, UnicodeError, csv.Error, TypeError):
+        pass
+    return result
+
+
+async def pwm_sessions(request: web.Request) -> web.Response:
+    records = []
+    for path in pwm_files(request.app["state"].log_dir)[:100]:
+        stat = path.stat()
+        records.append({"filename": path.name, "size": stat.st_size, "modified": stat.st_mtime})
+    return web.json_response({"sessions": records})
+
+
+async def pwm_download(request: web.Request) -> web.StreamResponse:
+    filename = request.match_info["filename"]
+    if not PWM_NAME.fullmatch(filename):
+        raise web.HTTPNotFound()
+    path = request.app["state"].log_dir / "coolant" / filename
+    if not path.is_file() or path.is_symlink():
+        raise web.HTTPNotFound()
+    # Snapshot the length at a complete row so active recordings stay downloadable.
+    with path.open("rb") as source:
+        source.seek(0, os.SEEK_END)
+        size = source.tell()
+        source.seek(max(0, size - 1024))
+        tail = source.read(1024)
+        size -= len(tail) - (tail.rfind(b"\n") + 1)
+        source.seek(0)
+        response = web.StreamResponse(headers={
+            "Content-Type": "text/csv",
+            "Content-Length": str(size),
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        })
+        await response.prepare(request)
+        while size:
+            chunk = await asyncio.to_thread(source.read, min(size, 65536))
+            if not chunk:
+                break
+            await response.write(chunk)
+            size -= len(chunk)
+        await response.write_eof()
+        return response
+
+
 async def status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     return web.json_response(
         {
             "telemetry": state.latest,
+            "pwm": await asyncio.to_thread(pwm_status, state.log_dir),
             "health": system_health(state.log_dir),
             "viewers": len(state.clients),
             "operator": request.app["auth"].authenticated(request),
@@ -331,6 +417,20 @@ async def command(request: web.Request) -> web.Response:
     return web.json_response(result, status=200 if result.get("success") else 409)
 
 
+async def airspeed_control(request: web.Request) -> web.Response:
+    command_name = "zero" if request.method == "POST" else "status"
+    if command_name == "zero":
+        require_operator(request)
+    async with request.app["airspeed_lock"]:
+        try:
+            result = await asyncio.to_thread(
+                control_request, request.app["airspeed_socket"], command_name, {}, 2
+            )
+        except (OSError, ValueError, RuntimeError):
+            raise web.HTTPServiceUnavailable(text="Airspeed logger unavailable; check its service") from None
+    return web.json_response(result, status=200 if result.get("success") else 409)
+
+
 async def sessions(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     active = (
@@ -376,6 +476,8 @@ async def create_app(args: argparse.Namespace) -> web.Application:
     app["auth"] = AuthManager(args.auth_file)
     app["control_socket"] = args.control_socket
     app["command_lock"] = asyncio.Lock()
+    app["airspeed_socket"] = args.airspeed_socket
+    app["airspeed_lock"] = asyncio.Lock()
 
     async def start_telemetry(application: web.Application) -> None:
         args.telemetry_socket.parent.mkdir(parents=True, exist_ok=True)
@@ -403,6 +505,10 @@ async def create_app(args: argparse.Namespace) -> web.Application:
     app.router.add_post("/api/operator/login", login)
     app.router.add_post("/api/operator/logout", logout)
     app.router.add_post("/api/commands/{command}", command)
+    app.router.add_get("/api/pwm/sessions", pwm_sessions)
+    app.router.add_get("/api/pwm/sessions/{filename}", pwm_download)
+    app.router.add_get("/api/airspeed", airspeed_control)
+    app.router.add_post("/api/airspeed/zero", airspeed_control)
     app.router.add_get("/api/sessions", sessions)
     app.router.add_get("/api/sessions/{filename}", download)
     return app
@@ -424,6 +530,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=Path("/run/vectornav/dashboard-telemetry.sock"),
     )
+    parser.add_argument("--airspeed-socket", type=Path,
+                        default=Path("/run/airspeed/logger-control.sock"))
     return parser.parse_args(argv)
 
 
